@@ -4,8 +4,6 @@ These are generally exposed and methods on the IDF object, e.g. `set_default_con
 can be called on an existing `IDF` object like ``myidf.set_default_constructions()``.
 
 """
-import inspect
-
 from typing import List, Optional, Tuple, Union  # noqa
 import warnings
 
@@ -16,12 +14,12 @@ from .geom.polygons import Polygon3D
 from .geom.transformations import Transformation
 from .geom.vectors import Vector2D, Vector3D  # noqa
 
+from decimal import Decimal, ROUND_HALF_DOWN
+
 if False:
     from .idf import IDF  # noqa
 if False:
     from .patches import EpBunch  # noqa
-
-from decimal import Decimal, ROUND_HALF_DOWN
 
 
 def set_default_constructions(idf):
