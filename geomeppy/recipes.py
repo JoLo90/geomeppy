@@ -4,6 +4,8 @@ These are generally exposed and methods on the IDF object, e.g. `set_default_con
 can be called on an existing `IDF` object like ``myidf.set_default_constructions()``.
 
 """
+import inspect
+
 from typing import List, Optional, Tuple, Union  # noqa
 import warnings
 
@@ -18,6 +20,8 @@ if False:
     from .idf import IDF  # noqa
 if False:
     from .patches import EpBunch  # noqa
+
+from decimal import Decimal, ROUND_HALF_DOWN
 
 
 def set_default_constructions(idf):
@@ -114,24 +118,47 @@ def set_wwr(
     except IndexError:
         ggr = None
 
-    # check orientation
-    orientations = {
-        "north": 0.0,
-        "east": 90.0,
-        "south": 180.0,
-        "west": 270.0,
-        None: None,
-    }
-    degrees = orientations.get(orientation, None)
-    external_walls = filter(
-        lambda x: x.Outside_Boundary_Condition.lower() == "outdoors",
-        idf.getsurfaces("wall"),
+    # determine EP building orientation
+    building_northaxis = idf.idfobjects["BUILDING"][0].North_Axis
+
+    # List ext walls
+    external_walls = list(
+        filter(
+            lambda x: x.Outside_Boundary_Condition.lower() == "outdoors",
+            idf.getsurfaces("wall"),
+        )
     )
-    external_walls = filter(
-        lambda x: _has_correct_orientation(x, degrees), external_walls
-    )
+    # Case where the "orientation" parameter is used
+    if orientation != None:
+        # check orientation
+        orientations = {
+            "north": 0.0,
+            "east": 90.0,
+            "south": 180.0,
+            "west": 270.0,
+            None: None,
+        }
+        degrees = orientations.get(orientation, None)
+        # filter the walls having the same orientation as the one passed to the orientation parameter
+        external_walls = list(
+            filter(
+                lambda x: _has_correct_orientation(x, degrees, building_northaxis),
+                external_walls,
+            )
+        )
+        wwr_orientation = wwr
+        wwr_map_final = None
+
+    # When no "orientation" parameter is passed
+    else:
+        wwr_orientation = None
+        wwr_map_final = {0: wwr, 90: wwr, 180: wwr, 270: wwr}
+        # Replaces with value from wwr_map in case not empty
+        for key, value in wwr_map.items():
+            wwr_map_final[key] = value
+
     subsurfaces = idf.getsubsurfaces()
-    base_wwr = wwr
+
     for wall in external_walls:
         # get any subsurfaces on the wall
         wall_subsurfaces = list(
@@ -157,22 +184,32 @@ def set_wwr(
         # remove all subsurfaces
         for ss in wall_subsurfaces:
             idf.removeidfobject(ss)
-        wwr = (wwr_map or {}).get(wall.azimuth) or base_wwr
-        if not wwr:
-            return
-        coords = window_vertices_given_wall(wall, wwr)
-        window = idf.newidfobject(
-            "FENESTRATIONSURFACE:DETAILED",
-            Name="%s window" % wall.Name,
-            Surface_Type="Window",
-            Construction_Name=construction or "",
-            Building_Surface_Name=wall.Name,
-            View_Factor_to_Ground="autocalculate",  # from the surface angle
+        # get the WWR for every wall taking in account the EnergyPlus North Axis
+        wall_cardinalorientation = wall.azimuth + building_northaxis
+        # wall_NESW result can be 0 (316° >= wall_cardinalorientation <= 45°), 90 (46° >= wall_cardinalorientation <= 135°), 180 (136° >= wall_cardinalorientation <= 225°) or 270 (226° >= wall_cardinalorientation <= 315°)
+        wall_NESW = (
+            (Decimal(wall_cardinalorientation % 360 / 90).quantize(0, ROUND_HALF_DOWN))
+            % 4
+            * 90
         )
-        window.setcoords(coords, ggr)
+        wwr = wwr_orientation or (wwr_map_final).get(wall_NESW)
+
+        if wwr == 0:
+            pass
+        else:
+            coords = window_vertices_given_wall(wall, wwr)
+            window = idf.newidfobject(
+                "FENESTRATIONSURFACE:DETAILED",
+                Name="%s window" % wall.Name,
+                Surface_Type="Window",
+                Construction_Name=construction or "",
+                Building_Surface_Name=wall.Name,
+                View_Factor_to_Ground="autocalculate",  # from the surface angle
+            )
+            window.setcoords(coords, ggr)
 
 
-def _has_correct_orientation(wall, orientation_degrees):
+def _has_correct_orientation(wall, orientation_degrees, building_northaxis):
     # type: (EpBunch, Optional[float]) -> bool
     """Check that the wall has an orientation which requires WWR to be set.
 
@@ -183,7 +220,10 @@ def _has_correct_orientation(wall, orientation_degrees):
     """
     if orientation_degrees is None:
         return True
-    if abs(wall.azimuth - orientation_degrees) < 45:
+    cardinal_orientation = wall.azimuth + building_northaxis
+    if (
+        Decimal(cardinal_orientation % 360 / 90).quantize(0, ROUND_HALF_DOWN)
+    ) % 4 * 90 == orientation_degrees:
         return True
     return False
 
@@ -218,9 +258,9 @@ def window_vertices_given_wall(wall, wwr):
     wwr_factor = np.sqrt(wwr)
     window_points = [
         [
-            x * wwr_factor * 0.999 + average_x * (1 - wwr_factor),
-            y * wwr_factor * 0.999 + average_y * (1 - wwr_factor),
-            z * wwr_factor * 0.999 + average_z * (1 - wwr_factor),
+            x * wwr_factor * 0.99999 + average_x * (1 - wwr_factor),
+            y * wwr_factor * 0.99999 + average_y * (1 - wwr_factor),
+            z * wwr_factor * 0.99999 + average_z * (1 - wwr_factor),
         ]
         for x, y, z in vertices
     ]
